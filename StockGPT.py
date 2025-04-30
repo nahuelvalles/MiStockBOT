@@ -10,16 +10,95 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 # ========== Configuraciones ==========
-TELEGRAM_BOT_TOKEN   = '8036801721:AAGwKi6sgt3SdLfYQeX9s0ZWbE8VOQ40bGo'
-SERVICE_ACCOUNT_FILE = 'service_account.json'   # tu JSON de service account
-OAUTH_CLIENT_FILE    = 'client_secret.json'      # tu JSON de OAuth client
-SCOPES               = [
+# ========== Configuraciones ==========
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Cambiado a variable de entorno
+
+# Configuración de Service Account desde variables de entorno
+SERVICE_ACCOUNT_INFO = {
+    "type": "service_account",
+    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("GOOGLE_PRIVATE_KEY").replace('\\n', '\n'),
+    "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
+    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.getenv('GOOGLE_CLIENT_EMAIL').replace('@', '%40')}"
+}
+
+# Configuración de OAuth Client desde variables de entorno
+OAUTH_CLIENT_CONFIG = {
+    "installed": {
+        "client_id": os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+        "redirect_uris": [os.getenv("GOOGLE_REDIRECT_URI", "http://localhost")],
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token"
+    }
+}
+
+SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive.file'
 ]
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-user_states = {}  # Para flujos (ventas, OAuth, etc.)
+user_states = {}
+
+# ========== Helpers de OAuth + Sheets ==========
+
+def get_credentials(chat_id, message):
+    """Carga o inicia OAuth y guarda credenciales en credentials_<chat_id>.pickle."""
+    cred_path = f'credentials_{chat_id}.pickle'
+    creds = None
+    if os.path.exists(cred_path):
+        with open(cred_path, 'rb') as f:
+            creds = pickle.load(f)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_config(  # Cambiado a from_client_config
+                OAUTH_CLIENT_CONFIG, SCOPES, redirect_uri='urn:ietf:wg:oauth:2.0:oob'
+            )
+            auth_url, _ = flow.authorization_url(
+                access_type='offline', include_granted_scopes='true'
+            )
+            user_states[chat_id] = {'awaiting_oauth_code': True, 'flow': flow}
+            bot.send_message(
+                chat_id,
+                "Para autorizar tu propia Google Sheet, visita este enlace:\n\n"
+                f"{auth_url}\n\n"
+                "Luego pega aquí el código que Google te dé."
+            )
+            return None
+        with open(cred_path, 'wb') as f:
+            pickle.dump(creds, f)
+    return creds
+
+def ensure_user_sheet(chat_id):
+    """Abre o crea la Sheet 'StockGPT' en la cuenta del usuario."""
+    cred_path = f'credentials_{chat_id}.pickle'
+    with open(cred_path, 'rb') as f:
+        creds = pickle.load(f)
+    client = gspread.authorize(creds)
+    try:
+        ss = client.open('StockGPT')
+    except gspread.SpreadsheetNotFound:
+        ss = client.create('StockGPT')
+        # Crear hojas y encabezados
+        prod = ss.add_worksheet(title="Productos", rows="100", cols="3")
+        vent = ss.add_worksheet(title="Ventas", rows="100", cols="3")
+        prod.update('A1:C1', [['Producto','Precio','Stock']])
+        vent.update('A1:C1', [['Fecha','Detalle','Total']])
+        # Formato
+        prod.format("B", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
+        prod.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.0"}})
+        vent.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
+    prod_sheet = ss.worksheet("Productos")
+    vent_sheet = ss.worksheet("Ventas")
+    return prod_sheet, vent_sheet
 
 # ========== Helpers de OAuth + Sheets ==========
 
