@@ -1,2 +1,20 @@
-# MiStockBOT
-Bot de Telegram + Google Sheets para manejo de stock. Automatiza el control de inventario en pequeños locales usando Google Sheets. Integra APIs con OAuth 2.0, desarrollado en Python (python-telegram-bot, gspread). Despliegue en Render para acceso 24/7.
+@"
+# MiStockBOT 🤖
+
+Bot de Telegram para gestión de stock con Google Sheets
+
+## 🛠 Tecnologías
+- Python 3
+- Biblioteca `python-telegram-bot`
+- Google Sheets API v4
+
+## 🔐 Configuración
+1. Clona el repositorio
+2. Crea un archivo `.env` con tus credenciales (usa `.env.example` como referencia)
+3. Instala dependencias: `pip install -r requirements.txt`
+
+## 📌 Ejemplo de uso
+\`\`\`bash
+python bot.py
+\`\`\`
+"@ | Out-File -FilePath README.md -Encoding utf8
