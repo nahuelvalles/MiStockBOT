@@ -73,9 +73,9 @@ def get_credentials(chat_id, message):
             user_states[chat_id] = {'awaiting_oauth_code': True, 'flow': flow}
             bot.send_message(
                 chat_id,
-                "Para autorizar tu propia Google Sheet, visita este enlace:\n\n"
+                "🤖 ¡Bienvenid@ a MiStockBOT! \nNecesito autorizarme acceso a crear una Google Sheet, visita el siguiente enlace:\n\n"
                 f"{auth_url}\n\n"
-                "Luego pega aquí el código que Google te dé."
+                "Copia el código que Google te brinde y enviámelo."
             )
             return None
         with open(cred_path, 'wb') as f:
@@ -171,7 +171,7 @@ def receive_oauth_code(message):
         creds = flow.credentials
         with open(f'credentials_{chat_id}.pickle', 'wb') as f:
             pickle.dump(creds, f)
-        bot.send_message(chat_id, "✅ Autorización exitosa. Creo tu Sheet y continúo...")
+        bot.send_message(chat_id, "✅ Autorización exitosa. Para ver los comandos disponibles escribe /menu")
         ensure_user_sheet(chat_id)
     except Exception as e:
         bot.send_message(chat_id, f"❌ Error en autorización: {e}\nIntenta de nuevo.")
@@ -243,6 +243,16 @@ def obtener_ventas(rango_dias=None, chat_id=None):
     return out
 
 # ========== Handlers de Comandos ==========
+@bot.message_handler(commands=['reset'])
+def cmd_reset(message):
+    chat_id = message.chat.id
+    cred_path = f'credentials_{chat_id}.pickle'
+    if os.path.exists(cred_path):
+        os.remove(cred_path)
+        bot.send_message(chat_id, "♻️ Historial reiniciado. Usa /authorize para vincular Google de nuevo.")
+    else:
+        bot.send_message(chat_id, "ℹ️ No hay historial previo para eliminar.")
+
 @bot.message_handler(commands=['start','authorize'])
 def cmd_start(message):
     creds = get_credentials(message.chat.id, message)
@@ -254,10 +264,10 @@ def mostrar_ayuda(message):
     if not get_credentials(message.chat.id, message):
         return
     text = (
-        "🏪 *StockGPT* 🛒\n\n"
+        "🏪 *MiStockBOT* 🛒\n\n"
         "*/venta* - Registra una venta\n"
         "*/consultar* - Consulta Stock o Ventas\n"
-        "*/agregarstock* - Añadir/actualizar producto\n"
+        "*/agregarstock* - Añadir/Actualizar Producto\n"
         "*/actualizar* - Cambiar precio de producto\n"
         "*/authorize* - Reautorizar Google\n"
         "*/ayuda* - Este mensaje"
@@ -272,7 +282,7 @@ def iniciar_venta(message):
     user_states[cid] = {'paso':'productos','productos':[]}
     bot.send_message(cid,
         "📝 *Registro de Venta*:\n"
-        "Ingresa cada producto como `KG Producto`\nEj: `2.5 Manzana Roja`",
+        "Ingresa cada producto como:\n KG Producto \nEj: 2.5 Manzana Roja",
         parse_mode='Markdown'
     )
 
@@ -353,7 +363,7 @@ def procesar_cantidad(m):
         user_states[cid].update({'cantidad':cantidad,'paso':'precio_producto'})
         markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True)
         markup.add('💰 Sí','🚫 No')
-        bot.send_message(cid, "¿Actualizar precio del producto?", reply_markup=markup)
+        bot.send_message(cid, "🔄 ¿Actualizar precio del producto?", reply_markup=markup)
     except:
         bot.send_message(cid, "❌ Valor inválido. Ej: `5` o `5.5`", parse_mode='Markdown')
 
@@ -363,7 +373,7 @@ def procesar_opcion_precio(m):
     resp = m.text.lower()
     if resp in ['sí','si','s','💰 sí']:
         user_states[cid]['paso']='ingresar_precio'
-        bot.send_message(cid, "💵 *Ingrese el nuevo precio:*", parse_mode='Markdown')
+        bot.send_message(cid, "💵 *Ingrese el nuevo precio (KG o Unidad):*", parse_mode='Markdown')
     else:
         try:
             res = agregar_actualizar_producto(
