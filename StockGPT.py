@@ -9,6 +9,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 # ========== Configuraciones ==========
 # ========== Configuraciones ==========
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Cambiado a variable de entorno
@@ -113,8 +118,8 @@ def get_credentials(chat_id, message):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                OAUTH_CLIENT_FILE, SCOPES, redirect_uri='urn:ietf:wg:oauth:2.0:oob'
+            flow = InstalledAppFlow.from_client_config(
+                OAUTH_CLIENT_CONFIG, SCOPES, redirect_uri='urn:ietf:wg:oauth:2.0:oob'
             )
             auth_url, _ = flow.authorization_url(
                 access_type='offline', include_granted_scopes='true'
