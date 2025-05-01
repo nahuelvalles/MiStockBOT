@@ -1,24 +1,36 @@
 import os
-import pickle
 import re
 from datetime import datetime, timedelta
-
 import telebot
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-
+from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
-import os
+import firebase_admin
+from firebase_admin import credentials as firebase_cred, firestore
 
 load_dotenv()
 
-# ========== Configuraciones ==========
-# ========== Configuraciones ==========
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Cambiado a variable de entorno
+# Configuración de Firebase
+firebase_creds = firebase_cred.Certificate({
+    "type": "service_account",
+    "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace('\\n', '\n'),
+    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+    "token_uri": "https://oauth2.googleapis.com/token",
+})
 
-# Configuración de Service Account desde variables de entorno
+firebase_admin.initialize_app(firebase_creds)
+db = firestore.client()
+
+
+# ========== Configuraciones ==========
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+
+# ========== Configuración de Service Account ==========
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": os.getenv("GOOGLE_PROJECT_ID"),
@@ -32,7 +44,7 @@ SERVICE_ACCOUNT_INFO = {
     "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.getenv('GOOGLE_CLIENT_EMAIL').replace('@', '%40')}"
 }
 
-# Configuración de OAuth Client desde variables de entorno
+# ========== Configuración de OAuth ==========
 OAUTH_CLIENT_CONFIG = {
     "installed": {
         "client_id": os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
@@ -51,73 +63,41 @@ SCOPES = [
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 user_states = {}
 
-# ========== Helpers de OAuth + Sheets ==========
+# ========== Helpers de OAuth y Sheets ==========
 
 def get_credentials(chat_id, message):
-    """Carga o inicia OAuth y guarda credenciales en credentials_<chat_id>.pickle."""
-    cred_path = f'credentials_{chat_id}.pickle'
+    """Obtiene credenciales desde Firestore."""
+    doc_ref = db.collection("users").document(str(chat_id))
+    doc = doc_ref.get()
+    
     creds = None
-    if os.path.exists(cred_path):
-        with open(cred_path, 'rb') as f:
-            creds = pickle.load(f)
+    if doc.exists:
+        data = doc.to_dict()
+        # Construye las credenciales desde Firestore
+        creds = Credentials(
+            token=data.get("token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=OAUTH_CLIENT_CONFIG["installed"]["client_id"],
+            client_secret=OAUTH_CLIENT_CONFIG["installed"]["client_secret"],
+            scopes=SCOPES
+        )
+    
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                # Actualiza el token en Firestore
+                doc_ref.set({
+                    "token": creds.token,
+                    "refresh_token": creds.refresh_token,
+                    "expiry": creds.expiry.isoformat()
+                })
+            except Exception as e:
+                print(f"Error al refrescar token: {e}")
+                return None
         else:
-            flow = InstalledAppFlow.from_client_config(  # Cambiado a from_client_config
-                OAUTH_CLIENT_CONFIG, SCOPES, redirect_uri='urn:ietf:wg:oauth:2.0:oob'
-            )
-            auth_url, _ = flow.authorization_url(
-                access_type='offline', include_granted_scopes='true'
-            )
-            user_states[chat_id] = {'awaiting_oauth_code': True, 'flow': flow}
-            bot.send_message(
-                chat_id,
-                "🤖 ¡Bienvenid@ a MiStockBOT! \nNecesito autorizarme acceso a crear una Google Sheet, visita el siguiente enlace:\n\n"
-                f"{auth_url}\n\n"
-                "Copia el código que Google te brinde y enviámelo."
-            )
-            return None
-        with open(cred_path, 'wb') as f:
-            pickle.dump(creds, f)
-    return creds
-
-def ensure_user_sheet(chat_id):
-    """Abre o crea la Sheet 'StockGPT' en la cuenta del usuario."""
-    cred_path = f'credentials_{chat_id}.pickle'
-    with open(cred_path, 'rb') as f:
-        creds = pickle.load(f)
-    client = gspread.authorize(creds)
-    try:
-        ss = client.open('StockGPT')
-    except gspread.SpreadsheetNotFound:
-        ss = client.create('StockGPT')
-        # Crear hojas y encabezados
-        prod = ss.add_worksheet(title="Productos", rows="100", cols="3")
-        vent = ss.add_worksheet(title="Ventas", rows="100", cols="3")
-        prod.update('A1:C1', [['Producto','Precio','Stock']])
-        vent.update('A1:C1', [['Fecha','Detalle','Total']])
-        # Formato
-        prod.format("B", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
-        prod.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.0"}})
-        vent.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
-    prod_sheet = ss.worksheet("Productos")
-    vent_sheet = ss.worksheet("Ventas")
-    return prod_sheet, vent_sheet
-
-# ========== Helpers de OAuth + Sheets ==========
-
-def get_credentials(chat_id, message):
-    """Carga o inicia OAuth y guarda credenciales en credentials_<chat_id>.pickle."""
-    cred_path = f'credentials_{chat_id}.pickle'
-    creds = None
-    if os.path.exists(cred_path):
-        with open(cred_path, 'rb') as f:
-            creds = pickle.load(f)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            # Inicia flujo OAuth
             flow = InstalledAppFlow.from_client_config(
                 OAUTH_CLIENT_CONFIG, SCOPES, redirect_uri='urn:ietf:wg:oauth:2.0:oob'
             )
@@ -127,21 +107,23 @@ def get_credentials(chat_id, message):
             user_states[chat_id] = {'awaiting_oauth_code': True, 'flow': flow}
             bot.send_message(
                 chat_id,
-                "Para autorizar tu propia Google Sheet, visita este enlace:\n\n"
+                "🤖 ¡Bienvenid@ a MiStockBOT! \nNecesito autorización para crear una hoja de Google Sheets, visita el siguiente enlace:\n\n"
                 f"{auth_url}\n\n"
-                "Luego pega aquí el código que Google te dé."
+                "Copia el código que Google te brinde y enviámelo."
             )
             return None
-        with open(cred_path, 'wb') as f:
-            pickle.dump(creds, f)
     return creds
 
 def ensure_user_sheet(chat_id):
-    """Abre o crea la Sheet 'StockGPT' en la cuenta del usuario."""
-    cred_path = f'credentials_{chat_id}.pickle'
-    with open(cred_path, 'rb') as f:
-        creds = pickle.load(f)
+
+    # Obtener credenciales desde Firestore
+    creds = get_credentials(chat_id, None)
+    
+    if not creds:
+        raise Exception("No se encontraron credenciales para el usuario.")
+    
     client = gspread.authorize(creds)
+    
     try:
         ss = client.open('StockGPT')
     except gspread.SpreadsheetNotFound:
@@ -151,10 +133,10 @@ def ensure_user_sheet(chat_id):
         vent = ss.add_worksheet(title="Ventas", rows="100", cols="3")
         prod.update('A1:C1', [['Producto','Precio','Stock']])
         vent.update('A1:C1', [['Fecha','Detalle','Total']])
-        # Formato
         prod.format("B", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
         prod.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.0"}})
         vent.format("C", {"numberFormat":{"type":"NUMBER","pattern":"#,##0.00"}})
+    
     prod_sheet = ss.worksheet("Productos")
     vent_sheet = ss.worksheet("Ventas")
     return prod_sheet, vent_sheet
@@ -163,20 +145,27 @@ def ensure_user_sheet(chat_id):
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id, {}).get('awaiting_oauth_code'))
 def receive_oauth_code(message):
     chat_id = message.chat.id
-    state   = user_states.get(chat_id)
-    code    = message.text.strip()
-    flow    = state.get('flow')
+    state = user_states.get(chat_id)
+    code = message.text.strip()
+    flow = state.get('flow')
     try:
         flow.fetch_token(code=code)
         creds = flow.credentials
-        with open(f'credentials_{chat_id}.pickle', 'wb') as f:
-            pickle.dump(creds, f)
+        # Guardar en Firestore
+        doc_ref = db.collection("users").document(str(chat_id))
+        doc_ref.set({
+            "token": creds.token,
+            "refresh_token": creds.refresh_token,
+            "expiry": creds.expiry.isoformat()
+        })
+        
         bot.send_message(chat_id, "✅ Autorización exitosa. Para ver los comandos disponibles escribe /menu")
         ensure_user_sheet(chat_id)
-    except Exception as e:
+        
+    except Exception as e: 
         bot.send_message(chat_id, f"❌ Error en autorización: {e}\nIntenta de nuevo.")
-        return
-    user_states.pop(chat_id, None)
+    finally: 
+        user_states.pop(chat_id, None)
 
 # ========== Funciones Base ==========
 def agregar_actualizar_producto(nombre, stock, precio=None, chat_id=None):
@@ -246,9 +235,10 @@ def obtener_ventas(rango_dias=None, chat_id=None):
 @bot.message_handler(commands=['reset'])
 def cmd_reset(message):
     chat_id = message.chat.id
-    cred_path = f'credentials_{chat_id}.pickle'
-    if os.path.exists(cred_path):
-        os.remove(cred_path)
+    # Eliminar de Firestore
+    doc_ref = db.collection("users").document(str(chat_id))
+    if doc_ref.get().exists:
+        doc_ref.delete()
         bot.send_message(chat_id, "♻️ Historial reiniciado. Usa /authorize para vincular Google de nuevo.")
     else:
         bot.send_message(chat_id, "ℹ️ No hay historial previo para eliminar.")
@@ -282,7 +272,11 @@ def iniciar_venta(message):
     user_states[cid] = {'paso':'productos','productos':[]}
     bot.send_message(cid,
         "📝 *Registro de Venta*:\n"
-        "Ingresa cada producto como:\n KG Producto \nEj: 2.5 Manzana Roja",
+        "Puedes ingresar tu producto de la siguiente manera:"
+        "\n KG Producto"
+        "\n Ej. 2.5 Manzana Roja o 2 Pera"
+        "\n También puedes utilizarlo como unidades:"
+        "\n Ej. 4 Pepsi o 12 Huevo",
         parse_mode='Markdown'
     )
 
@@ -318,7 +312,7 @@ def procesar_confirmacion(m):
         bot.send_message(cid, "Ingresa el producto:")
     else:
         user_states[cid]['paso']='total'
-        bot.send_message(cid, "💵 *Ingrese el monto total de la venta:*", parse_mode='Markdown')
+        bot.send_message(cid, "💵 *Ingrese el monto total de la venta:*\n Ej. '500' o '450.75'", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='total')
 def finalizar_venta(m):
@@ -353,7 +347,7 @@ def procesar_nombre_producto(m):
         'paso':'cantidad_producto',
         'producto': m.text.strip().title()
     }
-    bot.send_message(cid, "🔢 *Ingrese la cantidad a agregar (KG):*", parse_mode='Markdown')
+    bot.send_message(cid, "🔢 *Ingrese la cantidad a agregar (KG o Unidades):*", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='cantidad_producto')
 def procesar_cantidad(m):
@@ -373,7 +367,7 @@ def procesar_opcion_precio(m):
     resp = m.text.lower()
     if resp in ['sí','si','s','💰 sí']:
         user_states[cid]['paso']='ingresar_precio'
-        bot.send_message(cid, "💵 *Ingrese el nuevo precio (KG o Unidad):*", parse_mode='Markdown')
+        bot.send_message(cid, "💵 *Ingrese el nuevo precio (por KG o Unidad):*", parse_mode='Markdown')
     else:
         try:
             res = agregar_actualizar_producto(
@@ -421,8 +415,8 @@ def iniciar_actualizar_precio(m):
     lista = "\n".join([f"• {p['Producto']}" for p in regs])
     msg = bot.send_message(
         cid,
-        f"📋 *Productos:* \n{lista}\n\n"
-        "Escribe el nombre para actualizar precio:",
+        f"📋 *Productos actuales en Inventario:* \n{lista}\n\n"
+        "Escribe el nombre del producto del cual quieres actualizar el precio:",
         parse_mode='Markdown'
     )
     bot.register_next_step_handler(msg, procesar_producto_actualizar)
@@ -440,7 +434,7 @@ def procesar_producto_actualizar(m):
                 f"🏷️ {nombre}\n💵 Ingresa nuevo precio:",
                 parse_mode='Markdown'
             )
-    bot.send_message(cid, f"❌ '{nombre}' no encontrado. Intenta otra vez.")
+    bot.send_message(cid, f"❌ '{nombre}' No encontrado. Intenta otra vez.")
     bot.register_next_step_handler(m, procesar_producto_actualizar)
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='actualizar_precio')
