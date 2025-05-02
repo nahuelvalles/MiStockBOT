@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials as firebase_cred, firestore
 
+
 load_dotenv()
 
 # Configuración de Firebase
@@ -221,14 +222,23 @@ def registrar_venta(productos, total, chat_id=None):
 def obtener_ventas(rango_dias=None, chat_id=None):
     _, vent_sheet = ensure_user_sheet(chat_id)
     regs = vent_sheet.get_all_records(value_render_option='UNFORMATTED_VALUE')
+    hoy = datetime.now()
+    
     if not rango_dias:
         return regs
-    hoy = datetime.now()
+    
     out = []
     for v in regs:
         fv = datetime.strptime(v['Fecha'], "%Y-%m-%d %H:%M:%S")
-        if (hoy - fv).days <= rango_dias:
-            out.append(v)
+        
+        if rango_dias == 1:  # Fecha de hoy
+            if fv.date() == hoy.date():
+                out.append(v)
+                
+        elif rango_dias == 30:  # Este mes y año
+            if fv.month == hoy.month and fv.year == hoy.year:
+                out.append(v)
+                
     return out
 
 # ========== Handlers de Comandos ==========
@@ -495,28 +505,46 @@ def consultar_ventas(m):
 def procesar_consulta_ventas(m):
     cid = m.chat.id
     txt = m.text.lower()
+    
+    # Obtener ventas del período solicitado
     if 'hoy' in txt:
-        ventas = obtener_ventas(1, chat_id=cid)
-        título = 'hoy'
+        ventas_periodo = obtener_ventas(1, chat_id=cid)
+        titulo = 'hoy'
+        msg_no_ventas = "📭 No tienes ventas registradas hoy."
     elif 'mes' in txt:
-        ventas = obtener_ventas(30, chat_id=cid)
-        título = 'este mes'
+        ventas_periodo = obtener_ventas(30, chat_id=cid)
+        titulo = 'este mes'
+        msg_no_ventas = "📭 No tienes ventas registradas para este mes."
     else:
-        ventas = obtener_ventas(None, chat_id=cid)
-        título = 'historial'
-    if not ventas:
-        return bot.send_message(cid, f"📭 No hay ventas {título}")
-    total = sum(float(v['Total']) for v in ventas)
-    últimas = ventas[-5:]
-    detalle = "\n".join([f"• {v['Fecha']} - ${float(v['Total']):.2f}" for v in últimas])
-    bot.send_message(
-        cid,
-        f"📊 *Ventas ({título.title()})*\n\n"
-        f"Total Vendido: ${total:.2f}\n"
-        f"Transacciones: {len(ventas)}\n\n"
-        f"Últimas 5:\n{detalle}",
-        parse_mode='Markdown'
-    )
+        ventas_periodo = obtener_ventas(None, chat_id=cid)
+        titulo = 'historial'
+        msg_no_ventas = "📭 No hay ventas en el historial."
+    
+    # Obtener últimas 5 ventas del historial completo
+    ventas_historial = obtener_ventas(None, chat_id=cid)
+    ultimas = ventas_historial[-5:] if ventas_historial else []
+    
+    # Construir mensaje principal
+    mensaje = ""
+    if not ventas_periodo:
+        mensaje = f"{msg_no_ventas}\n\n"
+    else:
+        total = sum(float(v['Total']) for v in ventas_periodo)
+        transacciones = len(ventas_periodo)
+        mensaje = (
+            f"📊 *Ventas ({titulo.title()})*\n\n"
+            f"Total Vendido: ${total:.2f}\n"
+            f"Transacciones: {transacciones}\n\n"
+        )
+    
+    # Añadir últimas 5 ventas del historial
+    if ultimas:
+        detalle = "\n".join([f"• {v['Fecha']} - ${float(v['Total']):.2f}" for v in ultimas])
+        mensaje += f"Últimas 5 ventas registradas:\n{detalle}"
+    else:
+        mensaje += "No hay ventas registradas en el historial."
+    
+    bot.send_message(cid, mensaje, parse_mode='Markdown')
 
 # ========== Ejecutar Bot ==========
 if __name__ == '__main__':
