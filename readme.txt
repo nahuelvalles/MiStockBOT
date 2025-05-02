@@ -52,13 +52,13 @@ GOOGLE_OAUTH_CLIENT_SECRET="tu_client_secret"
 pip install -r requirements.txt
 
 📋 Comandos Disponibles
-Comando	            Descripción	                            Ejemplo
-/start	            Inicia el bot y autenticación	        /start
-/venta	            Registra una nueva venta	            /venta → Sigue el flujo
-/consultar	        Muestra stock o reportes de ventas      /consultar → Elige opción
-/agregarstock       Añade/actualiza productos	            /agregarstock Manzanas 50
-/actualizar	        Modifica precios de productos	        /actualizar Manzanas 120
-/reset	            Borra tus datos de la base de datos	    /reset
+Comando	                Descripción	                               Ejemplo
+/start	            Inicia el bot y autenticación	           /start
+/venta	            Registra una nueva venta	                /venta → Sigue el flujo
+/consultar	        Muestra stock o reportes de ventas       /consultar → Elige opción
+/agregarstock      Añade/actualiza productos	              /agregarstock Manzanas 50
+/actualizar	       Modifica precios de productos	          /actualizar Manzanas 120
+/reset	            Borra tus datos de la base de datos	     /reset
 
 ---
 
