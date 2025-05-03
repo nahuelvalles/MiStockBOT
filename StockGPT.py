@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials as firebase_cred, firestore
 from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
 
 
 load_dotenv()
@@ -65,24 +66,6 @@ SCOPES = [
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 user_states = {}
 
-# Ordenación por Levenshtein
-def normalizar_nombre(nombre):
-    return re.sub(r'[^a-zA-Z0-9]', '', nombre).lower()
-
-def buscar_coincidencias(producto_input, lista_productos):
-    coincidencias = []
-    for producto in lista_productos:
-        similitud = fuzz.token_sort_ratio(
-            normalizar_nombre(producto_input),
-            normalizar_nombre(producto)
-        )
-        if similitud > 40:  # Cantidad de similitudes
-            coincidencias.append((producto, similitud))
-    
-    # Ordenación descendente
-    coincidencias.sort(key=lambda x: x[1], reverse=True)
-    return [p[0] for p in coincidencias[:3]]  # Cantidad de resultados
-
 # ========== Helpers de OAuth y Sheets ==========
 
 def get_credentials(chat_id, message):
@@ -133,6 +116,45 @@ def get_credentials(chat_id, message):
             )
             return None
     return creds
+
+def normalizar_nombre(nombre):
+    return re.sub(r'[^a-zA-Z0-9]', '', nombre).lower()
+
+def buscar_coincidencias(producto_input, lista_productos):
+    coincidencias = []
+    for producto in lista_productos:
+        similitud = fuzz.token_sort_ratio(
+            normalizar_nombre(producto_input),
+            normalizar_nombre(producto)
+        )
+        if similitud > 40:  # Cantidad de resultados
+            coincidencias.append((producto, similitud))
+    
+    coincidencias.sort(key=lambda x: x[1], reverse=True)
+    return [p[0] for p in coincidencias[:3]]  # Top 3 resultados
+
+def dividir_lista(lista, n):
+    return [lista[i:i+n] for i in range(0, len(lista), n)]
+
+def crear_marcado_productos(productos, pagina=0):
+    markup = telebot.types.InlineKeyboardMarkup()
+    lotes = dividir_lista(productos, 5)
+    
+    # Botones de productos
+    for producto in lotes[pagina]:
+        markup.add(telebot.types.InlineKeyboardButton(
+            f"{producto['Producto']} - ${producto['Precio']:.2f} 💵",
+            callback_data=f"prod_{producto['Producto']}"
+        ))
+    
+    # Botón "Ver más"
+    if len(lotes) > pagina + 1:
+        markup.add(telebot.types.InlineKeyboardButton(
+            "Ver más... ➡️", 
+            callback_data=f"pag_{pagina + 1}"
+        ))
+    
+    return markup
 
 def ensure_user_sheet(chat_id):
 
@@ -313,9 +335,9 @@ def iniciar_venta(message):
     user_states[cid] = {'paso':'productos','productos':[]}
     bot.send_message(cid,
         "📝 *Registro de Venta*:\n"
-        "Puedes ingresar tu producto de la siguiente manera:"
+        "Puedes ingresar tu producto de la siguiente manera:\n"
         "\n KG Producto"
-        "\n Ej. 2.5 Manzana Roja o 2 Pera"
+        "\n Ej. 2.5 Manzana Roja o 2 Pera\n"
         "\n También puedes utilizarlo como unidades:"
         "\n Ej. 4 Pepsi o 12 Huevo",
         parse_mode='Markdown'
@@ -335,7 +357,7 @@ def procesar_producto(m):
         markup.add('✅ Sí','❌ No')
         msg = bot.send_message(
             cid,
-            f"➕ Añadido: {cantidad}KG de {producto}\n¿Vendiste algo más?",
+            f"➕ Añadido: {cantidad} de {producto}\n¿Vendiste algo más?",
             reply_markup=markup
         )
         bot.register_next_step_handler(msg, procesar_confirmacion)
@@ -353,7 +375,7 @@ def procesar_confirmacion(m):
         bot.send_message(cid, "Ingresa el producto:")
     else:
         user_states[cid]['paso']='total'
-        bot.send_message(cid, "💵 *Ingrese el monto total de la venta:*\n Ej. '500' o '450.75'", parse_mode='Markdown')
+        bot.send_message(cid, "💵 *Ingresa el monto total de la venta:*\n Ej. '500' o '450.75'", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='total')
 def finalizar_venta(m):
@@ -369,7 +391,7 @@ def finalizar_venta(m):
             parse_mode='Markdown'
         )
     except Exception as e:
-        bot.send_message(cid, f"❌ Error: {e}")
+        bot.send_message(cid, f"❌ Error: {e}\n")
     finally:
         user_states.pop(cid,None)
 
@@ -379,7 +401,7 @@ def iniciar_agregar_stock(m):
         return
     cid = m.chat.id
     user_states[cid] = {'paso':'nombre_producto'}
-    bot.send_message(cid, "📦 *Ingrese el nombre del producto:*", parse_mode='Markdown')
+    bot.send_message(cid, "📦 *Ingresa el nombre del producto:*", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='nombre_producto')
 def procesar_nombre_producto(m):
@@ -388,7 +410,7 @@ def procesar_nombre_producto(m):
         'paso':'cantidad_producto',
         'producto': m.text.strip().title()
     }
-    bot.send_message(cid, "🔢 *Ingrese la cantidad a agregar (KG o Unidades):*", parse_mode='Markdown')
+    bot.send_message(cid, "🔢 *Ingresa la cantidad a agregar (KG o Unidades):*", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='cantidad_producto')
 def procesar_cantidad(m):
@@ -408,7 +430,7 @@ def procesar_opcion_precio(m):
     resp = m.text.lower()
     if resp in ['sí','si','s','💰 sí']:
         user_states[cid]['paso']='ingresar_precio'
-        bot.send_message(cid, "💵 *Ingrese el nuevo precio (por KG o Unidad):*", parse_mode='Markdown')
+        bot.send_message(cid, "💵 *Ingresa el nuevo precio (por KG o Unidad):*", parse_mode='Markdown')
     else:
         try:
             res = agregar_actualizar_producto(
@@ -435,7 +457,7 @@ def procesar_precio(m):
         )
         bot.send_message(
             cid,
-            f"✅ *Producto agregado exitosamente!* 🏷️{estado['producto']}\n"
+            f"✅ *Producto añadido exitosamente!*" "\n 🏷️{estado['producto']}\n"
             f"📦 {estado['cantidad']}KG\n💵 ${precio:.2f}",
             parse_mode='Markdown'
         )
@@ -444,23 +466,87 @@ def procesar_precio(m):
     finally:
         user_states.pop(cid,None)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pag_'))
+def manejar_paginacion(call):
+    cid = call.message.chat.id
+    pagina = int(call.data.split('_')[1])
+    estado = user_states.get(cid, {})
+    
+    if not estado:
+        return
+    
+    # Actualizar markup
+    markup = crear_marcado_productos(estado['productos'], pagina)
+    
+    bot.edit_message_reply_markup(
+        chat_id=cid,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id, {}).get('paso') == 'actualizar_precio')
+def actualizar_precio_producto(m):
+    cid = m.chat.id
+    estado = user_states.get(cid)
+    if not estado:
+        return
+    
+    try:
+        nuevo_precio = round(float(m.text.replace(',', '.')), 2)
+        producto = estado['producto']
+        
+        # Actualizar solo el precio (stock=0)
+        agregar_actualizar_producto(
+            nombre=producto,
+            stock=0,  # No cambia el stock
+            precio=nuevo_precio,
+            chat_id=cid
+        )
+        
+        bot.send_message(
+            cid,
+            f"✅ *Precio actualizado!*\n"
+            f"🏷 {producto}\n"
+            f"💵 Nuevo precio: ${nuevo_precio:.2f}",
+            parse_mode='Markdown'
+        )
+    
+    except Exception as e:
+        bot.send_message(cid, f"❌ Error: {e}")
+    
+    finally:
+        user_states.pop(cid, None)
+
 @bot.message_handler(commands=['actualizar'])
 def iniciar_actualizar_precio(m):
     if not get_credentials(m.chat.id, m):
         return
     cid = m.chat.id
     prod_sheet, _ = ensure_user_sheet(cid)
-    regs = prod_sheet.get_all_records()
+    regs = prod_sheet.get_all_records(value_render_option='UNFORMATTED_VALUE')
+    
     if not regs:
         return bot.send_message(cid, "📭 No hay productos en inventario")
-    lista = "\n".join([f"• {p['Producto']}" for p in regs])
-    msg = bot.send_message(
+    
+    user_states[cid] = {
+        'accion': 'actualizar',
+        'productos': regs,
+        'pagina_actual': 0
+    }
+    
+    markup = crear_marcado_productos(regs)
+    bot.send_message(  # ← Primer mensaje
         cid,
-        f"📋 *Productos actuales en Inventario:* \n{lista}\n\n"
-        "Escribe el nombre del producto del cual quieres actualizar el precio:",
+        "📋 *Productos en Inventario:*\nSelecciona uno o escribe el nombre:",
+        reply_markup=markup,
+        parse_mode='Markdown'
+    ) 
+    
+    bot.send_message(
+        cid,
+        "🕵️*¿No encuentras el producto?*\n¡También puedes _escribir_ el nombre o parte de él y yo buscaré la coincidencia más cercana! 🔍\nEjemplo: 'manzan' → Manzana Roja",
         parse_mode='Markdown'
     )
-    bot.register_next_step_handler(msg, procesar_producto_actualizar)
 
 def procesar_producto_actualizar(m):
     cid = m.chat.id
@@ -491,29 +577,51 @@ def procesar_producto_actualizar(m):
     
     bot.register_next_step_handler(m, procesar_producto_actualizar)
 
-@bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='actualizar_precio')
-def actualizar_precio_producto(m):
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id, {}).get('accion') == 'actualizar')
+def manejar_busqueda_manual(m):
     cid = m.chat.id
-    estado = user_states[cid]
-    try:
-        nuevo = round(float(m.text.replace(',','.')),2)
-        if nuevo <= 0:
-            raise ValueError("El precio debe ser > 0")
-        prod_sheet, _ = ensure_user_sheet(cid)
-        regs = prod_sheet.get_all_records()
-        for idx, reg in enumerate(regs):
-            if reg['Producto'].lower()==estado['producto'].lower():
-                prod_sheet.update_cell(idx+2,2,nuevo)
-                break
-        bot.send_message(
-            cid,
-            f"✅ Precio actualizado!\n• {estado['producto']}: ${nuevo:.2f}",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        bot.send_message(cid, f"❌ {e}\nEj: `150.50`")
-    finally:
-        user_states.pop(cid,None)
+    query = m.text.strip()
+    estado = user_states.get(cid, {})
+    
+    # Buscar coincidencias
+    productos = estado['productos']
+    nombres = [p['Producto'] for p in productos]
+    resultados = process.extract(query, nombres, limit=3)
+    
+    if not resultados or resultados[0][1] < 50:
+        bot.send_message(cid, f"❌ No encontré '{query}'")
+        return
+    
+    # Crear botones
+    markup = telebot.types.InlineKeyboardMarkup()
+    for res in resultados:
+        producto_completo = next((p for p in productos if p['Producto'] == res[0]), None)
+        if producto_completo:
+            markup.add(telebot.types.InlineKeyboardButton(
+                f"{res[0]} - ${producto_completo['Precio']:.2f} 💵",  # ← Añade precio aquí
+                callback_data=f"prod_{res[0]}"
+            ))
+    
+    bot.send_message(
+        cid,
+        f"🔍 No encontré coincidencias exactas para '{query}' quizás te referías a alguno de estos: ",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('prod_'))
+def seleccionar_producto(call):
+    cid = call.message.chat.id
+    nombre = call.data.split('_', 1)[1]
+    
+    bot.delete_message(cid, call.message.message_id)
+    
+    user_states[cid] = {'paso': 'actualizar_precio', 'producto': nombre}
+    
+    bot.send_message(
+        cid,
+        f"🏷️ {nombre}\n💵 Ingresa nuevo precio:",
+        parse_mode='Markdown'
+    )
 
 @bot.message_handler(commands=['consultar'])
 def consultar_menu(m):
