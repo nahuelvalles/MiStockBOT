@@ -10,6 +10,7 @@ from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials as firebase_cred, firestore
+from fuzzywuzzy import fuzz
 
 
 load_dotenv()
@@ -63,6 +64,24 @@ SCOPES = [
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 user_states = {}
+
+# Ordenación por Levenshtein
+def normalizar_nombre(nombre):
+    return re.sub(r'[^a-zA-Z0-9]', '', nombre).lower()
+
+def buscar_coincidencias(producto_input, lista_productos):
+    coincidencias = []
+    for producto in lista_productos:
+        similitud = fuzz.token_sort_ratio(
+            normalizar_nombre(producto_input),
+            normalizar_nombre(producto)
+        )
+        if similitud > 40:  # Cantidad de similitudes
+            coincidencias.append((producto, similitud))
+    
+    # Ordenación descendente
+    coincidencias.sort(key=lambda x: x[1], reverse=True)
+    return [p[0] for p in coincidencias[:3]]  # Cantidad de resultados
 
 # ========== Helpers de OAuth y Sheets ==========
 
@@ -195,17 +214,29 @@ def registrar_venta(productos, total, chat_id=None):
     total = float(str(total).replace(',', '.'))
     prod_sheet, vent_sheet = ensure_user_sheet(chat_id)
     registros = prod_sheet.get_all_records(value_render_option='UNFORMATTED_VALUE')
-    # Verificar stock
+    todos_productos = [p['Producto'] for p in registros]
+    
+    # Verificar stock y productos
     for p in productos:
         p['producto'] = p['producto'].lower()
-        p['cantidad'] = round(float(str(p['cantidad']).replace(',', '.')),1)
+        p['cantidad'] = round(float(str(p['cantidad']).replace(',', '.')), 1)
+        
+        encontrado = False
         for reg in registros:
-            if reg['Producto'].lower()==p['producto']:
+            if normalizar_nombre(reg['Producto']) == normalizar_nombre(p['producto']):
+                encontrado = True
                 if reg['Stock'] < p['cantidad']:
-                    raise ValueError(f"Stock insuficiente de {p['producto']}")
+                    raise ValueError(f"Stock insuficiente de {reg['Producto']}")
                 break
-        else:
-            raise ValueError(f"Producto {p['producto']} no encontrado")
+        
+        if not encontrado:
+            sugerencias = buscar_coincidencias(p['producto'], todos_productos)
+            if sugerencias:
+                mensaje = f"❌ Producto '{p['producto']}' no existe. ¿Quizás quisiste decir:\n"
+                mensaje += "\n".join([f"• {sug}" for sug in sugerencias])
+                raise ValueError(mensaje)
+            else:
+                raise ValueError(f"Producto '{p['producto']}' no encontrado")
     # Registrar
     fecha  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     det    = " | ".join([f"{p['cantidad']}KG {p['producto']}" for p in productos])
@@ -404,7 +435,7 @@ def procesar_precio(m):
         )
         bot.send_message(
             cid,
-            f"✅ *Producto {res} exitosamente!* 🏷️{estado['producto']}\n"
+            f"✅ *Producto agregado exitosamente!* 🏷️{estado['producto']}\n"
             f"📦 {estado['cantidad']}KG\n💵 ${precio:.2f}",
             parse_mode='Markdown'
         )
@@ -433,18 +464,31 @@ def iniciar_actualizar_precio(m):
 
 def procesar_producto_actualizar(m):
     cid = m.chat.id
-    nombre = m.text.strip().title()
+    nombre_input = m.text.strip()
     prod_sheet, _ = ensure_user_sheet(cid)
     regs = prod_sheet.get_all_records()
-    for reg in regs:
-        if reg['Producto'].lower()==nombre.lower():
-            user_states[cid] = {'paso':'actualizar_precio','producto':nombre}
-            return bot.send_message(
-                cid,
-                f"🏷️ {nombre}\n💵 Ingresa nuevo precio:",
-                parse_mode='Markdown'
-            )
-    bot.send_message(cid, f"❌ '{nombre}' No encontrado. Intenta otra vez.")
+    
+    # Buscar coincidencia exacta
+    encontrado = None
+    todos_productos = [p['Producto'] for p in regs]
+    for producto in todos_productos:
+        if normalizar_nombre(producto) == normalizar_nombre(nombre_input):
+            encontrado = producto
+            break
+    
+    if encontrado:
+        user_states[cid] = {'paso':'actualizar_precio','producto':encontrado}
+        return bot.send_message(cid, f"🏷️ {encontrado}\n💵 Ingresa nuevo precio:", parse_mode='Markdown')
+    
+    # Si no, buscar sugerencias
+    sugerencias = buscar_coincidencias(nombre_input, todos_productos)
+    if sugerencias:
+        mensaje = f"❌ Producto no encontrado. ¿Quizás quisiste decir:\n"
+        mensaje += "\n".join([f"• {sug}" for sug in sugerencias])
+        bot.send_message(cid, mensaje)
+    else:
+        bot.send_message(cid, "❌ Producto no encontrado. Verifica el nombre.")
+    
     bot.register_next_step_handler(m, procesar_producto_actualizar)
 
 @bot.message_handler(func=lambda m: user_states.get(m.chat.id,{}).get('paso')=='actualizar_precio')
